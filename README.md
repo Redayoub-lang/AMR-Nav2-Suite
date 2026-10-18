@@ -1,22 +1,29 @@
-# AMR-Nav2-Suite: Autonomous Mobile Robot Navigation Engine
+# AMR-Nav2-Suite (v2.0 Industrial Edition)
+## Autonomous Mobile Robot Navigation Engine with AMCL, TEB Planner & Multi-Layer Costmap
 
-An industrial-grade navigation engine for Autonomous Mobile Robots (AMRs) featuring dual-layer path planning with **$A^*$ Global Planner**, **Dynamic Window Approach (DWA) Local Planner**, and **Differential Drive Kinematics**.
-
----
-
-## Core Features
-
-* **Grid Occupancy Mapping:** Spatial discretization for wall obstacles and dynamic obstacles.
-* **Global $A^*$ Path Search:** Optimal shortest-path generation with Euclidean distance heuristic.
-* **DWA Local Controller:** Dynamic obstacle avoidance and smooth trajectory rollout.
-* **Differential Drive Odometry:** Forward kinematics integration tracking pose $(x, y, \theta)$.
-* **Telemetry Data Logger:** Real-time logging of velocity setpoints and pose state to `amr_navigation_log.csv`.
+An industrial-grade ROS 2-style Navigation Suite for Autonomous Mobile Robots (AMRs) featuring **Adaptive Monte Carlo Localization (AMCL)**, **Timed Elastic Band (TEB) Local Planner**, and **Exponential Inflation Multi-Layered Costmaps**.
 
 ---
 
-## Kinematics & Control Laws
+## Key Features in v2.0
 
-$$\begin{bmatrix} \dot{x} \\ \dot{y} \\ \dot{\theta} \end{bmatrix} = \begin{bmatrix} \cos\theta & 0 \\ \sin\theta & 0 \\ 0 & 1 \end{bmatrix} \begin{bmatrix} v \\ \omega \end{bmatrix}$$
+* **AMCL Particle Filter Localization:** Probabilistic cloud estimation with motion noise propagation, costmap measurement likelihood, and low-variance resampling.
+* **TEB Local Planner:** Kinematically constrained trajectory optimization respecting $v_{\text{max}}$, $\omega_{\text{max}}$, acceleration bounds, and dynamic hazard repulsion.
+* **Multi-Layered Costmap:** Integrated static obstacle layer and dynamic exponential inflation decay layer ($C_{\text{cost}} = 254 \cdot \exp(-\alpha d)$).
+* **Tactical Visualizer:** Real-time dashboard showing particle clouds, inflation zones, TEB local band ribbons, and velocity setpoints.
+* **Telemetry Data Logger:** Live export of pose estimates and velocity setpoints to `amr_nav2_v2_telemetry.csv`.
+
+---
+
+## Mathematical Mechanics
+
+AMCL particle likelihood update based on costmap $C(r,c)$:
+
+$$w_k^{[m]} \propto \exp\left(-\frac{C(r,c)}{50.0}\right)$$
+
+Inflation cost decay formula:
+
+$$C(d) = 254 \cdot \exp\left(-\alpha \cdot (d - r_{\text{inscribed}})\right)$$
 
 ---
 
@@ -26,5 +33,5 @@ $$\begin{bmatrix} \dot{x} \\ \dot{y} \\ \dot{\theta} \end{bmatrix} = \begin{bmat
 # Install dependencies
 pip install -r requirements.txt
 
-# Run AMR Navigator
+# Run AMR Nav2 Engine v2.0
 python amr_navigation_engine.py

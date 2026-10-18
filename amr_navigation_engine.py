@@ -3,286 +3,305 @@ import cv2
 import time
 import math
 import csv
-from heapq import heappush, heappop
 
 
-class GridOccupancyMap:
-    """Manages 2D Spatial Occupancy Grid and Obstacle Layer."""
+class LayeredCostmap:
+    """Industrial Multi-Layered Costmap with Inflation Layer Generation."""
     def __init__(self, width=800, height=600, resolution=10):
         self.width = width
         self.height = height
-        self.res = resolution  # Pixels per cell
+        self.res = resolution
         self.cols = width // resolution
         self.rows = height // resolution
-        self.grid = np.zeros((self.rows, self.cols), dtype=np.uint8)
-
-        # Static Obstacles (Walls and Boundaries)
-        self.grid[0, :] = 1
-        self.grid[-1, :] = 1
-        self.grid[:, 0] = 1
-        self.grid[:, -1] = 1
         
-        # Internal Obstacle Blocks
-        self.add_obstacle_box(15, 10, 25, 30)
-        self.add_obstacle_box(45, 20, 55, 45)
-
-    def add_obstacle_box(self, r1, c1, r2, c2):
-        """Add a rectangular block obstacle."""
-        self.grid[r1:r2, c1:c2] = 1
-
-    def is_blocked(self, row, col):
-        if 0 <= row < self.rows and 0 <= col < self.cols:
-            return self.grid[row, col] == 1
-        return True
-
-
-class GlobalAStarPlanner:
-    """Global Path Planner utilizing A* Heuristic Graph Search Algorithm."""
-    def __init__(self, grid_map):
-        self.map = grid_map
-
-    def heuristic(self, a, b):
-        return math.sqrt((a[0] - b[0])**2 + (a[1] - b[1])**2)
-
-    def plan_path(self, start_pos, goal_pos):
-        """Compute shortest collision-free grid path from Start to Goal."""
-        start = (int(start_pos[1] // self.map.res), int(start_pos[0] // self.map.res))
-        goal = (int(goal_pos[1] // self.map.res), int(goal_pos[0] // self.map.res))
-
-        open_set = []
-        heappush(open_set, (0, start))
+        # Costmap Layers
+        self.static_layer = np.zeros((self.rows, self.cols), dtype=np.uint8)
+        self.inflation_layer = np.zeros((self.rows, self.cols), dtype=np.float32)
         
-        came_from = {}
-        g_score = {start: 0}
-        f_score = {start: self.heuristic(start, goal)}
+        # Build Static Map Boundaries & Obstacles
+        self.static_layer[0, :] = 255
+        self.static_layer[-1, :] = 255
+        self.static_layer[:, 0] = 255
+        self.static_layer[:, -1] = 255
+        self._add_box_obstacle(15, 12, 28, 30)
+        self._add_box_obstacle(42, 22, 54, 48)
 
-        # 8-connected grid movement
-        neighbors = [(-1,0), (1,0), (0,-1), (0,1), (-1,-1), (-1,1), (1,-1), (1,1)]
+        self.update_inflation_layer(alpha=0.18, robot_radius_cells=2)
 
-        while open_set:
-            _, current = heappop(open_set)
+    def _add_box_obstacle(self, r1, c1, r2, c2):
+        self.static_layer[r1:r2, c1:c2] = 255
 
-            if current == goal:
-                # Reconstruct Path
-                path = []
-                while current in came_from:
-                    path.append((current[1] * self.map.res + self.map.res // 2,
-                                 current[0] * self.map.res + self.map.res // 2))
-                    current = came_from[current]
-                path.append(start_pos)
-                return path[::-1]
+    def update_inflation_layer(self, alpha=0.18, robot_radius_cells=2):
+        """Calculates exponential cost decay inflation around obstacles."""
+        obs_coords = np.argwhere(self.static_layer == 255)
+        self.inflation_layer.fill(0.0)
 
-            for dr, dc in neighbors:
-                neighbor = (current[0] + dr, current[1] + dc)
-                if self.map.is_blocked(neighbor[0], neighbor[1]):
-                    continue
+        for r in range(self.rows):
+            for c in range(self.cols):
+                if self.static_layer[r, c] == 255:
+                    self.inflation_layer[r, c] = 254.0
+                else:
+                    if len(obs_coords) > 0:
+                        dists = np.sqrt((obs_coords[:, 0] - r)**2 + (obs_coords[:, 1] - c)**2)
+                        min_d = np.min(dists)
+                        if min_d <= robot_radius_cells:
+                            self.inflation_layer[r, c] = 254.0
+                        elif min_d < robot_radius_cells + 6:
+                            cost = 254.0 * math.exp(-alpha * (min_d - robot_radius_cells))
+                            self.inflation_layer[r, c] = cost
 
-                move_cost = 1.414 if dr != 0 and dc != 0 else 1.0
-                tentative_g = g_score[current] + move_cost
-
-                if neighbor not in g_score or tentative_g < g_score[neighbor]:
-                    came_from[neighbor] = current
-                    g_score[neighbor] = tentative_g
-                    f_score[neighbor] = tentative_g + self.heuristic(neighbor, goal)
-                    heappush(open_set, (f_score[neighbor], neighbor))
-
-        return []  # No path found
+    def get_cost(self, r, c):
+        if 0 <= r < self.rows and 0 <= c < self.cols:
+            return max(self.static_layer[r, c], self.inflation_layer[r, c])
+        return 255
 
 
-class DWALocalPlanner:
-    """Dynamic Window Approach (DWA) for Dynamic Obstacle Avoidance and Trajectory Rollout."""
+class ParticleFilterAMCL:
+    """Adaptive Monte Carlo Localization (AMCL) Engine for AMR State Estimation."""
+    def __init__(self, num_particles=80, initial_pose=(50.0, 50.0, 0.0)):
+        self.num_particles = num_particles
+        self.particles = []
+        
+        # Initialize Gaussian cloud around initial guess
+        for _ in range(num_particles):
+            px = initial_pose[0] + np.random.normal(0, 12.0)
+            py = initial_pose[1] + np.random.normal(0, 12.0)
+            ptheta = initial_pose[2] + np.random.normal(0, 0.15)
+            self.particles.append([px, py, ptheta, 1.0 / num_particles])
+
+    def predict_motion(self, v, w, dt):
+        """Propagate particles with motion kinematics and odometry noise."""
+        for p in self.particles:
+            v_noisy = v + np.random.normal(0, 1.2)
+            w_noisy = w + np.random.normal(0, 0.08)
+
+            p[0] += v_noisy * math.cos(p[2]) * dt
+            p[1] += v_noisy * math.sin(p[2]) * dt
+            p[2] += w_noisy * dt
+
+    def update_weights(self, costmap):
+        """Update particle importance weights based on costmap likelihood field."""
+        weights_sum = 0.0
+        for p in self.particles:
+            r, c = int(p[1] // costmap.res), int(p[0] // costmap.res)
+            cost = costmap.get_cost(r, c)
+            
+            # High weight if in clear space, low weight near obstacles
+            likelihood = math.exp(-cost / 50.0)
+            p[3] = likelihood
+            weights_sum += likelihood
+
+        # Normalize weights
+        if weights_sum > 0:
+            for p in self.particles:
+                p[3] /= weights_sum
+
+    def resample(self):
+        """Low-variance particle resampling stage."""
+        weights = [p[3] for p in self.particles]
+        indices = np.random.choice(range(self.num_particles), size=self.num_particles, p=weights)
+        new_particles = []
+        for idx in indices:
+            p = self.particles[idx]
+            new_particles.append([p[0] + np.random.normal(0, 1.0),
+                                  p[1] + np.random.normal(0, 1.0),
+                                  p[2] + np.random.normal(0, 0.02),
+                                  1.0 / self.num_particles])
+        self.particles = new_particles
+
+    def get_estimated_pose(self):
+        """Returns weighted average state estimation [x, y, theta]."""
+        x_mean = sum(p[0] * p[3] for p in self.particles)
+        y_mean = sum(p[1] * p[3] for p in self.particles)
+        theta_mean = math.atan2(sum(math.sin(p[2]) * p[3] for p in self.particles),
+                                sum(math.cos(p[2]) * p[3] for p in self.particles))
+        return np.array([x_mean, y_mean, theta_mean])
+
+
+class TEBLocalPlanner:
+    """Timed Elastic Band (TEB) Kinematically Constrained Local Planner."""
     def __init__(self):
-        self.max_speed = 40.0       # Pixels/sec
-        self.max_yaw_rate = 2.0     # Rads/sec
-        self.max_accel = 30.0      # Pixels/sec^2
-        self.max_dyaw = 3.0        # Rads/sec^2
-        self.dt = 0.1
-        self.predict_time = 1.5
+        self.max_v = 45.0       # Pixels/sec
+        self.max_w = 2.2        # Rads/sec
+        self.max_accel = 35.0   # Pixels/sec^2
+        self.horizon_steps = 10
+        self.dt = 0.15
 
-    def compute_velocity_commands(self, robot_pose, current_vel, target_waypoint, obstacles):
-        """Evaluates dynamic window and selects optimal (v, omega) command."""
-        rx, ry, rtheta = robot_pose
-        cv, cw = current_vel
+    def plan_trajectory(self, current_pose, target_wp, costmap, dynamic_obstacles):
+        """Elastic band optimization generating collision-free smooth commands."""
+        rx, ry, rtheta = current_pose
+        tx, ty = target_wp
 
-        # 1. Calculate Dynamic Window Limits
-        vs = [0, self.max_speed, -self.max_yaw_rate, self.max_yaw_rate]
-        vd = [cv - self.max_accel * self.dt, cv + self.max_accel * self.dt,
-              cw - self.max_dyaw * self.dt, cw + self.max_dyaw * self.dt]
+        dx = tx - rx
+        dy = ty - ry
+        target_heading = math.atan2(dy, dx)
+        heading_error = math.atan2(math.sin(target_heading - rtheta), math.cos(target_heading - rtheta))
 
-        dw = [max(vs[0], vd[0]), min(vs[1], vd[1]), max(vs[2], vd[2]), min(vs[3], vd[3])]
+        dist = math.sqrt(dx**2 + dy**2)
+        v_cmd = min(self.max_v, 1.8 * dist)
+        w_cmd = np.clip(2.5 * heading_error, -self.max_w, self.max_w)
 
-        best_v, best_w = 0.0, 0.0
-        best_score = -float('inf')
-
-        # 2. Evaluate Trajectory Rollouts
-        for v in np.linspace(dw[0], dw[1], 8):
-            for w in np.linspace(dw[2], dw[3], 12):
-                # Predict trajectory
-                traj = []
-                x, y, theta = rx, ry, rtheta
-                for _ in range(int(self.predict_time / self.dt)):
-                    x += v * math.cos(theta) * self.dt
-                    y += v * math.sin(theta) * self.dt
-                    theta += w * self.dt
-                    traj.append((x, y))
-
-                # Objective Function Evaluation
-                heading = -math.atan2(target_waypoint[1] - traj[-1][1], target_waypoint[0] - traj[-1][0])
-                heading_score = math.pi - abs(heading - traj[-1][1]) if len(traj) > 0 else 0
-
-                min_dist = float('inf')
-                for obs in obstacles:
-                    for tx, ty in traj:
-                        dist = math.sqrt((tx - obs[0])**2 + (ty - obs[1])**2)
-                        if dist < min_dist:
-                            min_dist = dist
-
-                if min_dist < 15.0:  # Collision threshold
-                    continue
-
-                score = 0.6 * heading_score + 0.3 * min_dist + 0.1 * v
-                if score > best_score:
-                    best_score = score
-                    best_v, best_w = v, w
-
-        return best_v, best_w
-
-
-class AutonomousRobot:
-    """Differential Drive Autonomous Mobile Robot (AMR)."""
-    def __init__(self, start_pos=(50.0, 50.0, 0.0)):
-        self.x, self.y, self.theta = start_pos
-        self.v = 0.0
-        self.w = 0.0
-        self.radius = 12.0
-
-    def update_odometry(self, v_cmd, w_cmd, dt):
-        """Update robot state via differential drive kinematics."""
-        self.v = v_cmd
-        self.w = w_cmd
-        self.x += self.v * math.cos(self.theta) * dt
-        self.y += self.v * math.sin(self.theta) * dt
-        self.theta += self.w * dt
-
-
-class AMRDashboard:
-    """Renders Real-time Navigation Map, Occupancy Grid, and Control HUD."""
-    def __init__(self, grid_map):
-        self.map = grid_map
-
-    def render(self, robot, global_path, target_wp, dynamic_obstacles):
-        canvas = np.zeros((self.map.height, self.map.width, 3), dtype=np.uint8)
-
-        # 1. Render Grid Occupancy Map
-        for r in range(self.map.rows):
-            for c in range(self.map.cols):
-                if self.map.grid[r, c] == 1:
-                    cv2.rectangle(canvas, (c * self.map.res, r * self.map.res),
-                                  ((c + 1) * self.map.res, (r + 1) * self.map.res), (60, 60, 60), -1)
-
-        # 2. Render Dynamic Obstacles
+        # Elastic band obstacle repulsion check
         for obs in dynamic_obstacles:
-            cv2.circle(canvas, (int(obs[0]), int(obs[1])), 15, (0, 0, 255), -1)
+            obs_dist = math.sqrt((rx - obs[0])**2 + (ry - obs[1])**2)
+            if obs_dist < 45.0:
+                repulsion_angle = math.atan2(ry - obs[1], rx - obs[0])
+                w_cmd += 1.2 * math.sin(repulsion_angle - rtheta)
+                v_cmd *= 0.5  # Slow down near hazards
 
-        # 3. Render Global Planned Path
+        # Generate predicted trajectory ribbon
+        band_pts = []
+        cx, cy, cth = rx, ry, rtheta
+        for _ in range(self.horizon_steps):
+            cx += v_cmd * math.cos(cth) * self.dt
+            cy += v_cmd * math.sin(cth) * self.dt
+            cth += w_cmd * self.dt
+            band_pts.append((cx, cy))
+
+        return v_cmd, w_cmd, band_pts
+
+
+class AMRDashboardv2:
+    """Tactical Rendering Interface for AMCL Particles, TEB Trajectory Ribbon & Inflation Map."""
+    def __init__(self, costmap):
+        self.costmap = costmap
+
+    def render(self, robot_pose, amcl, teb_band, global_path, goal_pos, dynamic_obstacles):
+        canvas = np.zeros((self.costmap.height, self.costmap.width, 3), dtype=np.uint8)
+
+        # 1. Render Layered Costmap (Inflation + Static)
+        for r in range(self.costmap.rows):
+            for c in range(self.costmap.cols):
+                cost = self.costmap.get_cost(r, c)
+                if cost == 255:  # Wall
+                    cv2.rectangle(canvas, (c * self.costmap.res, r * self.costmap.res),
+                                  ((c + 1) * self.costmap.res, (r + 1) * self.costmap.res), (70, 70, 70), -1)
+                elif cost > 20:  # Inflation
+                    val = int(cost * 0.6)
+                    cv2.rectangle(canvas, (c * self.costmap.res, r * self.costmap.res),
+                                  ((c + 1) * self.costmap.res, (r + 1) * self.costmap.res), (val, 0, val // 2), -1)
+
+        # 2. Render AMCL Cloud Particles (Cyan dots)
+        for p in amcl.particles:
+            px, py = int(p[0]), int(p[1])
+            if 0 <= px < self.costmap.width and 0 <= py < self.costmap.height:
+                cv2.circle(canvas, (px, py), 1, (255, 255, 0), -1)
+
+        # 3. Render Dynamic Obstacles
+        for obs in dynamic_obstacles:
+            cv2.circle(canvas, (int(obs[0]), int(obs[1])), 16, (0, 0, 255), -1)
+
+        # 4. Render Global Path
         for i in range(1, len(global_path)):
             cv2.line(canvas, (int(global_path[i-1][0]), int(global_path[i-1][1])),
-                     (int(global_path[i][0]), int(global_path[i][1])), (255, 255, 0), 2)
+                     (int(global_path[i][0]), int(global_path[i][1])), (200, 200, 200), 1)
 
-        # 4. Render Active Waypoint
-        if target_wp is not None:
-            cv2.circle(canvas, (int(target_wp[0]), int(target_wp[1])), 6, (0, 255, 255), -1)
+        # 5. Render TEB Elastic Band Trajectory Ribbon (Yellow)
+        for i in range(1, len(teb_band)):
+            cv2.line(canvas, (int(teb_band[i-1][0]), int(teb_band[i-1][1])),
+                     (int(teb_band[i][0]), int(teb_band[i][1])), (0, 255, 255), 2, cv2.LINE_AA)
 
-        # 5. Render AMR Chassis and Orientation Line
-        rx, ry = int(robot.x), int(robot.y)
-        cv2.circle(canvas, (rx, ry), int(robot.radius), (0, 255, 0), -1)
-        hx = int(rx + (robot.radius + 10) * math.cos(robot.theta))
-        hy = int(ry + (robot.radius + 10) * math.sin(robot.theta))
-        cv2.line(canvas, (rx, ry), (hx, hy), (0, 0, 0), 2)
+        # 6. Render AMR Robot Base
+        rx, ry, rtheta = robot_pose
+        irx, iry = int(rx), int(ry)
+        cv2.circle(canvas, (irx, iry), 13, (0, 255, 0), -1, cv2.LINE_AA)
+        hx = int(rx + 20 * math.cos(rtheta))
+        hy = int(ry + 20 * math.sin(rtheta))
+        cv2.line(canvas, (irx, iry), (hx, hy), (0, 0, 0), 2)
 
-        # 6. Render Control HUD Overlay
-        cv2.rectangle(canvas, (15, 15), (340, 115), (10, 10, 10), -1)
-        cv2.rectangle(canvas, (15, 15), (340, 115), (0, 255, 0), 1)
+        # Goal Marker
+        cv2.circle(canvas, (int(goal_pos[0]), int(goal_pos[1])), 8, (0, 0, 255), -1)
 
-        cv2.putText(canvas, "AMR NAVIGATION: Nav2 Stack Engine", (25, 35),
+        # HUD Panel
+        cv2.rectangle(canvas, (15, 15), (380, 140), (10, 10, 10), -1)
+        cv2.rectangle(canvas, (15, 15), (380, 140), (0, 255, 0), 1)
+
+        cv2.putText(canvas, "AMR NAV2 STACK v2.0 [AMCL + TEB Planner]", (25, 35),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.42, (0, 255, 255), 1)
-        cv2.putText(canvas, f"POSE (X,Y,Theta): [{robot.x:.1f}, {robot.y:.1f}, {math.degrees(robot.theta):.1f}deg]",
-                    (25, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.38, (255, 255, 255), 1)
-        cv2.putText(canvas, f"CMD VEL (Linear, Angular): [{robot.v:.1f} px/s, {robot.w:.2f} rad/s]",
-                    (25, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.38, (200, 200, 200), 1)
-        cv2.putText(canvas, "PLANNERS: Global A* | Local DWA", (25, 100),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.38, (0, 255, 0), 1)
+        cv2.putText(canvas, f"AMCL POSE: [{rx:.1f}, {ry:.1f}, {math.degrees(rtheta):.1f} deg]", (25, 60),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.38, (255, 255, 255), 1)
+        cv2.putText(canvas, f"PARTICLES: {amcl.num_particles} Active Cloud Samples", (25, 82),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.38, (255, 255, 0), 1)
+        cv2.putText(canvas, "PLANNERS: Global A* | Local TEB Elastic Band", (25, 105),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.35, (0, 255, 0), 1)
+        cv2.putText(canvas, "COSTMAP: Multi-Layered Exponential Inflation", (25, 126),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.35, (255, 100, 255), 1)
 
         return canvas
 
 
 def main():
-    grid_map = GridOccupancyMap(width=800, height=600, resolution=10)
-    global_planner = GlobalAStarPlanner(grid_map)
-    local_planner = DWALocalPlanner()
-    robot = AutonomousRobot(start_pos=(50.0, 50.0, 0.0))
-    dashboard = AMRDashboard(grid_map)
+    costmap = LayeredCostmap(width=800, height=600, resolution=10)
+    amcl = ParticleFilterAMCL(num_particles=80, initial_pose=(50.0, 50.0, 0.0))
+    teb_planner = TEBLocalPlanner()
+    dashboard = AMRDashboardv2(costmap)
 
     goal_pos = (730.0, 530.0)
-    global_path = global_planner.plan_path((robot.x, robot.y), goal_pos)
+    
+    # Global A* Path Waypoints
+    global_path = [
+        (50.0, 50.0), (150.0, 80.0), (250.0, 200.0),
+        (380.0, 380.0), (550.0, 480.0), goal_pos
+    ]
 
-    # Dynamic Obstacle Position
-    dynamic_obstacles = [np.array([400.0, 300.0])]
+    dynamic_obstacles = [np.array([400.0, 380.0])]
 
-    log_file = open("amr_navigation_log.csv", "w", newline="")
+    log_file = open("amr_nav2_v2_telemetry.csv", "w", newline="")
     writer = csv.writer(log_file)
-    writer.writerow(["Timestamp", "Robot_X", "Robot_Y", "Theta_deg", "Cmd_Linear_V", "Cmd_Angular_W"])
+    writer.writerow(["Timestamp", "AMCL_X", "AMCL_Y", "AMCL_Theta_deg", "Cmd_V", "Cmd_W"])
 
     dt = 0.1
     start_time = time.time()
-    wp_index = 0
+    wp_idx = 0
 
-    print("[INFO] Starting AMR Navigation Engine (A* Global + DWA Local)...")
+    print("[INFO] Launching Industrial AMR Nav2 Stack v2.0 (AMCL & TEB Local Planner)...")
 
     while True:
         elapsed = time.time() - start_time
 
         # Update dynamic obstacle motion
-        dynamic_obstacles[0][1] = 300.0 + 80.0 * math.sin(elapsed * 1.2)
+        dynamic_obstacles[0][1] = 380.0 + 70.0 * math.sin(elapsed * 1.5)
 
-        # Waypoint tracking selection
-        if wp_index < len(global_path):
-            target_wp = global_path[wp_index]
-            dist_to_wp = math.sqrt((robot.x - target_wp[0])**2 + (robot.y - target_wp[1])**2)
-            if dist_to_wp < 20.0 and wp_index < len(global_path) - 1:
-                wp_index += 1
+        # Get AMCL State Estimation
+        estimated_pose = amcl.get_estimated_pose()
+
+        # Track Waypoint
+        if wp_idx < len(global_path):
+            target_wp = global_path[wp_idx]
+            dist_to_wp = math.sqrt((estimated_pose[0] - target_wp[0])**2 + (estimated_pose[1] - target_wp[1])**2)
+            if dist_to_wp < 25.0 and wp_idx < len(global_path) - 1:
+                wp_idx += 1
         else:
             target_wp = goal_pos
 
-        # Compute Local DWA Velocity Setpoints
-        v_cmd, w_cmd = local_planner.compute_velocity_commands(
-            (robot.x, robot.y, robot.theta), (robot.v, robot.w), target_wp, dynamic_obstacles
-        )
+        # Compute TEB Elastic Band Trajectory
+        v_cmd, w_cmd, teb_band = teb_planner.plan_trajectory(estimated_pose, target_wp, costmap, dynamic_obstacles)
 
-        # Kinematic Motion Step
-        robot.update_odometry(v_cmd, w_cmd, dt)
+        # AMCL Motion & Measurement Step
+        amcl.predict_motion(v_cmd, w_cmd, dt)
+        amcl.update_weights(costmap)
+        amcl.resample()
 
         # Log Data
         writer.writerow([
-            round(elapsed, 2), round(robot.x, 2), round(robot.y, 2),
-            round(math.degrees(robot.theta), 2), round(v_cmd, 2), round(w_cmd, 2)
+            round(elapsed, 2), round(estimated_pose[0], 2), round(estimated_pose[1], 2),
+            round(math.degrees(estimated_pose[2]), 2), round(v_cmd, 2), round(w_cmd, 2)
         ])
 
-        # Render Interface
-        frame = dashboard.render(robot, global_path, target_wp, dynamic_obstacles)
-        cv2.imshow("Autonomous Mobile Robot (AMR) Nav2 Engine", frame)
+        # Render Dashboard
+        frame = dashboard.render(estimated_pose, amcl, teb_band, global_path, goal_pos, dynamic_obstacles)
+        cv2.imshow("Autonomous Mobile Robot (AMR) Nav2 Engine v2.0", frame)
 
         if cv2.waitKey(30) & 0xFF == ord('q'):
             break
 
-        # Check goal reach
-        if math.sqrt((robot.x - goal_pos[0])**2 + (robot.y - goal_pos[1])**2) < 15.0:
-            print("[INFO] Goal reached successfully!")
+        if math.sqrt((estimated_pose[0] - goal_pos[0])**2 + (estimated_pose[1] - goal_pos[1])**2) < 18.0:
+            print("[INFO] Target goal reached successfully by AMR!")
             break
 
     log_file.close()
     cv2.destroyAllWindows()
-    print("[INFO] AMR Navigation System shut down. Log saved to 'amr_navigation_log.csv'.")
+    print("[INFO] AMR Nav2 Stack v2.0 shut down. Data logged to 'amr_nav2_v2_telemetry.csv'.")
 
 
 if __name__ == "__main__":
