@@ -1,37 +1,33 @@
-# AMR-Nav2-Suite (v2.0 Industrial Edition)
-## Autonomous Mobile Robot Navigation Engine with AMCL, TEB Planner & Multi-Layer Costmap
+# AMR-Nav2-Suite (v3.0 Enterprise Edition)
+## ROS 2 Nav2 Behavior Tree Architecture with Multi-AMR Fleet Traffic Manager
 
-An industrial-grade ROS 2-style Navigation Suite for Autonomous Mobile Robots (AMRs) featuring **Adaptive Monte Carlo Localization (AMCL)**, **Timed Elastic Band (TEB) Local Planner**, and **Exponential Inflation Multi-Layered Costmaps**.
+An enterprise-grade Autonomous Mobile Robot (AMR) Navigation Engine featuring **Nav2 Behavior Tree Control Flow**, **Multi-Robot Intersection Lock Allocation**, and **3D Depth Camera Perception Layering**.
 
 ---
 
-## Key Features in v2.0
+## Enterprise Features in v3.0
 
-* **AMCL Particle Filter Localization:** Probabilistic cloud estimation with motion noise propagation, costmap measurement likelihood, and low-variance resampling.
-* **TEB Local Planner:** Kinematically constrained trajectory optimization respecting $v_{\text{max}}$, $\omega_{\text{max}}$, acceleration bounds, and dynamic hazard repulsion.
-* **Multi-Layered Costmap:** Integrated static obstacle layer and dynamic exponential inflation decay layer ($C_{\text{cost}} = 254 \cdot \exp(-\alpha d)$).
-* **Tactical Visualizer:** Real-time dashboard showing particle clouds, inflation zones, TEB local band ribbons, and velocity setpoints.
-* **Telemetry Data Logger:** Live export of pose estimates and velocity setpoints to `amr_nav2_v2_telemetry.csv`.
+* **ROS 2 Nav2 Behavior Tree Engine:** Reactive Sequence and Fallback tree execution handling recovery actions (Spin, Costmap Clearance, Replanning).
+* **Multi-AMR Fleet Traffic Manager:** Priority-based temporal reservation grid locks preventing warehouse intersection deadlocks.
+* **3D Perception Layer:** Depth camera 3D cloud projection detecting overhanging hazards ($0.3\text{m} \le z \le 2.0\text{m}$).
+* **Fleet Tactical Dashboard:** Live monitoring of BT state node execution, intersection locks, and battery state-of-charge.
+* **Telemetry Logger:** Exports high-frequency navigation states to `amr_nav2_v3_telemetry.csv`.
 
 ---
 
 ## Mathematical Mechanics
 
-AMCL particle likelihood update based on costmap $C(r,c)$:
+Behavior Tree Fallback Node Evaluation:
 
-$$w_k^{[m]} \propto \exp\left(-\frac{C(r,c)}{50.0}\right)$$
-
-Inflation cost decay formula:
-
-$$C(d) = 254 \cdot \exp\left(-\alpha \cdot (d - r_{\text{inscribed}})\right)$$
+$$\mathcal{S}_{\text{Fallback}}(N_1, \dots, N_k) = \begin{cases} \text{SUCCESS} & \text{if } \exists i : \mathcal{S}(N_i) = \text{SUCCESS} \\ \text{FAILURE} & \text{otherwise} \end{cases}$$
 
 ---
 
-## Execution Guide
+## Quick Execution
 
 ```bash
 # Install dependencies
 pip install -r requirements.txt
 
-# Run AMR Nav2 Engine v2.0
+# Run v3.0 Engine
 python amr_navigation_engine.py
